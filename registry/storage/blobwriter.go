@@ -1,16 +1,22 @@
 package storage
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/distribution/distribution/v3"
 	dcontext "github.com/distribution/distribution/v3/context"
 	storagedriver "github.com/distribution/distribution/v3/registry/storage/driver"
+	"github.com/klauspost/compress/zstd"
 	"github.com/opencontainers/go-digest"
 	"github.com/sirupsen/logrus"
 )
@@ -343,8 +349,48 @@ func (bw *blobWriter) moveBlob(ctx context.Context, desc distribution.Descriptor
 	}
 
 	// TODO(stevvooe): We should also write the mediatype when executing this move.
+	// TODO(ndeloof): INDEED 😓
 
-	return bw.blobStore.driver.Move(ctx, bw.path, blobPath)
+	err = bw.blobStore.driver.Move(ctx, bw.path, blobPath)
+	if err != nil {
+		return err
+	}
+
+	// This could also be implemented as a background task to limit impact on PUSH
+
+	// FIXME we should rely on media type, but this one is not set
+	reader, err := bw.blobStore.driver.Reader(ctx, blobPath, 0)
+	if err != nil {
+		return err
+	}
+	r := bufio.NewReader(reader)
+	header, err := r.Peek(2)
+	// if strings.HasSuffix(desc.MediaType, "+gzip") {
+	if err != nil || header[0] != 0x1f || header[1] != 0x8b {
+		return nil
+	}
+
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	raw, err := ioutil.ReadAll(gz)
+	if err != nil {
+		return err
+	}
+	buf := bytes.Buffer{}
+	w, err := zstd.NewWriter(&buf)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+	if err != nil {
+		return err
+	}
+	w.Close()
+	path := filepath.Join(filepath.Dir(blobPath), "data.zstd")
+	return bw.blobStore.driver.PutContent(ctx, path, buf.Bytes())
 }
 
 // removeResources should clean up all resources associated with the upload

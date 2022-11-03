@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/registry/storage/driver"
+	"github.com/golang/gddo/httputil/header"
 	"github.com/opencontainers/go-digest"
 )
 
@@ -24,6 +26,13 @@ type blobServer struct {
 }
 
 func (bs *blobServer) ServeBlob(ctx context.Context, w http.ResponseWriter, r *http.Request, dgst digest.Digest) error {
+	if compression := r.Header.Get("Docker-Transport-Compression"); compression == "enabled" {
+		found, err := bs.ServeBlobContent(ctx, w, r, dgst)
+		if found || err != nil {
+			return err
+		}
+	}
+
 	desc, err := bs.statter.Stat(ctx, dgst)
 	if err != nil {
 		return err
@@ -75,4 +84,42 @@ func (bs *blobServer) ServeBlob(ctx context.Context, w http.ResponseWriter, r *h
 
 	http.ServeContent(w, r, desc.Digest.String(), time.Time{}, br)
 	return nil
+}
+
+func (bs *blobServer) ServeBlobContent(ctx context.Context, w http.ResponseWriter, r *http.Request, dgst digest.Digest) (bool, error) {
+	path, err := bs.pathFn(dgst)
+	if err != nil {
+		return false, err
+	}
+
+	accepted := header.ParseAccept(r.Header, "Accept-Encoding")
+	for _, enc := range accepted {
+		path = filepath.Join(filepath.Dir(path), "data."+enc.Value)
+
+		stat, err := bs.driver.Stat(ctx, path)
+		if err != nil {
+			if _, ok := err.(driver.PathNotFoundError); ok {
+				continue
+			}
+			return false, err
+		}
+		size := stat.Size()
+
+		br, err := newFileReader(ctx, bs.driver, path, size)
+		if err != nil {
+			return false, err
+		}
+		defer br.Close()
+
+		w.Header().Set("ETag", dgst.String()) // If-None-Match handled by ServeContent
+		w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%.f", blobCacheControlMaxAge.Seconds()))
+		w.Header().Set("Content-Type", "application/octet-stream") // FIXME should be the actual content media-type
+		w.Header().Set("Content-Length", fmt.Sprint(size))
+		w.Header().Set("Content-Encoding", enc.Value)
+
+		http.ServeContent(w, r, dgst.String(), time.Time{}, br)
+		return true, nil
+	}
+
+	return false, nil
 }

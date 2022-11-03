@@ -57,6 +57,20 @@ var (
 		Examples:    []string{"Bearer dGhpcyBpcyBhIGZha2UgYmVhcmVyIHRva2VuIQ=="},
 	}
 
+	acceptEncodingHeader = ParameterDescriptor{
+		Name:     "Accept-Encoding",
+		Type:     "string",
+		Format:   "<scheme> <token>",
+		Examples: []string{"gzip, zstd"},
+	}
+
+	contentEncodingHeader = ParameterDescriptor{
+		Name:     "Content-Encoding",
+		Type:     "string",
+		Format:   "<scheme> <token>",
+		Examples: []string{"zstd"},
+	}
+
 	authChallengeHeader = ParameterDescriptor{
 		Name:        "WWW-Authenticate",
 		Type:        "string",
@@ -732,6 +746,7 @@ var routeDescriptors = []RouteDescriptor{
 						Headers: []ParameterDescriptor{
 							hostHeader,
 							authHeader,
+							acceptEncodingHeader,
 						},
 						PathParameters: []ParameterDescriptor{
 							nameParameterDescriptor,
@@ -749,9 +764,10 @@ var routeDescriptors = []RouteDescriptor{
 										Format:      "<length>",
 									},
 									digestHeader,
+									contentEncodingHeader,
 								},
 								Body: BodyDescriptor{
-									ContentType: "application/octet-stream",
+									ContentType: "application/octet-stream", // FIXME should be the actual content media-type
 									Format:      "<blob binary data>",
 								},
 							},
