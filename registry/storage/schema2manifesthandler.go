@@ -1,9 +1,12 @@
 package storage
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 
 	"github.com/distribution/distribution/v3"
@@ -11,6 +14,7 @@ import (
 	"github.com/distribution/distribution/v3/manifest/schema1"
 	"github.com/distribution/distribution/v3/manifest/schema2"
 	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 var (
@@ -86,7 +90,22 @@ func (ms *schema2ManifestHandler) verifyManifest(ctx context.Context, mnfst sche
 
 	blobsService := ms.repository.Blobs(ctx)
 
-	for _, descriptor := range mnfst.References() {
+	b, err := blobsService.Get(ctx, mnfst.Config.Digest)
+	if err != nil {
+		err = distribution.ErrBlobUnknown // just coerce to unknown.
+	}
+	var image v1.Image
+	err = json.Unmarshal(b, &image)
+	if err != nil {
+		err = distribution.ErrBlobInvalidContent
+	}
+	layerContentDigests := image.RootFS.DiffIDs
+	if len(layerContentDigests) != len(mnfst.Layers) {
+		return distribution.ErrBlobInvalidContent
+	}
+
+	for i, descriptor := range mnfst.Layers {
+		verifier := layerContentDigests[i].Verifier()
 		err := descriptor.Digest.Validate()
 		if err != nil {
 			errs = append(errs, err, distribution.ErrManifestBlobUnknown{Digest: descriptor.Digest})
@@ -94,6 +113,25 @@ func (ms *schema2ManifestHandler) verifyManifest(ctx context.Context, mnfst sche
 		}
 
 		switch descriptor.MediaType {
+		case schema2.MediaTypeLayer, v1.MediaTypeImageLayerGzip, v1.MediaTypeImageLayerNonDistributableGzip:
+			blob, err := blobsService.Open(ctx, descriptor.Digest)
+			if err != nil {
+				err = distribution.ErrBlobUnknown
+				break
+			}
+			r, err := gzip.NewReader(blob)
+			if err != nil {
+				err = distribution.ErrBlobInvalidContent
+				break
+			}
+			_, err = io.Copy(verifier, r)
+			if err != nil {
+				err = distribution.ErrBlobInvalidContent
+				break
+			}
+			if !verifier.Verified() {
+				err = distribution.ErrBlobInvalidContent
+			}
 		case schema2.MediaTypeForeignLayer:
 			// Clients download this layer from an external URL, so do not check for
 			// its presence.

@@ -23,6 +23,9 @@ var (
 	// ErrBlobUnknown when blob is not found.
 	ErrBlobUnknown = errors.New("unknown blob")
 
+	// ErrBlobInvalidContent when blob is not compliant with expected media type.
+	ErrBlobInvalidContent = errors.New("invalid blob content")
+
 	// ErrBlobUploadUnknown returned when upload is not found.
 	ErrBlobUploadUnknown = errors.New("blob upload unknown")
 
